@@ -827,6 +827,19 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
         return () => { alive = false }
       }, [day, dayTick])
 
+      // ⭐ 0.2.3：后台跑完的那一轮原来不会自动出现在面板上（要手动点一下才重取）——
+      //    使用者反馈「UI 里推荐/不推荐列表没更新」就是这个原因。
+      //    这里每 15 秒静默重取一次；页面在后台时跳过，切回来立刻补一次。
+      React.useEffect(() => {
+        const timer = setInterval(() => {
+          if (typeof document !== 'undefined' && document.hidden) return
+          setDayTick((n) => n + 1)
+        }, 15000)
+        const onVis = () => { if (typeof document !== 'undefined' && !document.hidden) setDayTick((n) => n + 1) }
+        document.addEventListener('visibilitychange', onVis)
+        return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis) }
+      }, [])
+
       const win = { ...DEFAULT_WINDOWS, ...(st?.windows || {}) }
 
       // ⭐ 人设：挂载时取一次（**不进轮询**，免得冲掉正在编辑的草稿）

@@ -302,7 +302,7 @@ export function apply(ctx, config) {
     llmProvider: '', llmModel: '', llmReasoningEffort: '',
     searchIntent: '', mailEnabled: true, mailTo: '', minScoreForMail: 0,
     autoLike: false,             // 推荐的视频自动点赞（只有赞）
-    autoNext: false, autoNextIntervalMin: 10, autoNextMaxRounds: 3, watchlaterEnabled: false, triageEnabled: false,
+    autoNext: false, autoNextIntervalMin: 1, autoNextMaxRounds: 0, watchlaterEnabled: false, triageEnabled: false,
     deepMode: 'brief', todayKeepDays: 60,
     perRound: 5, candidatesPerRound: 5, obsidianEnabled: false, obsidianDir: '', obsidianSubdir: 'B站日报',
   }
@@ -2298,8 +2298,11 @@ export function apply(ctx, config) {
     //    那条是**定时窗口**的额度；续刷是使用者主动要的"看完就接着刷"）。
     const st = readJson(dutyStateFile, {})
     const rounds = st.day === date ? Number(st.autoRounds || 0) : 0
-    if (rounds >= Math.max(1, Number(cfg.autoNextMaxRounds || 3))) {
-      log(`自动续刷跳过：今天已经续刷 ${rounds} 轮（上限 ${cfg.autoNextMaxRounds || 3}）`)
+    // ⭐ 0.2.3：**默认不限轮数**（0 = 不限）。原来写死 3 轮，日志里天天是
+    //    「今天已经续刷 3 轮（上限 3）」—— 使用者看到的就是"自动续刷不起作用"。
+    const maxRounds = Number(cfg.autoNextMaxRounds ?? 0)
+    if (maxRounds > 0 && rounds >= maxRounds) {
+      log(`自动续刷跳过：今天已经续刷 ${rounds} 轮（上限 ${maxRounds}）`)
       return
     }
     const gap = Math.max(1, Number(cfg.autoNextIntervalMin || 10)) * 60000
@@ -2936,6 +2939,7 @@ export function apply(ctx, config) {
       // ⭐ 2026-10-18 新增字段的夹取（防 NaN/负数/瞎填）
       if ('minScoreForMail' in patch) patch.minScoreForMail = Math.max(0, Math.min(Math.floor(Number(patch.minScoreForMail) || 0), 10))
       if ('autoNextIntervalMin' in patch) patch.autoNextIntervalMin = Math.max(1, Math.min(Math.floor(Number(patch.autoNextIntervalMin) || 10), 1440))
+      if ('autoNextMaxRounds' in patch) patch.autoNextMaxRounds = Math.max(0, Math.min(Math.floor(Number(patch.autoNextMaxRounds) || 0), 50))
       if ('autoNextMaxRounds' in patch) patch.autoNextMaxRounds = Math.max(1, Math.min(Math.floor(Number(patch.autoNextMaxRounds) || 3), 20))
       if ('todayKeepDays' in patch) patch.todayKeepDays = Math.max(7, Math.min(Math.floor(Number(patch.todayKeepDays) || 60), 3650))
       if ('deepMode' in patch) patch.deepMode = String(patch.deepMode) === 'full' ? 'full' : 'brief'
