@@ -1,0 +1,80 @@
+{
+  "name": "@littlefallenstar/dsh-bili-scroll",
+  "version": "0.1.9",
+  "description": "DSH 插件：每天替你刷一轮 B站 —— 读字幕挑出值得的、每条写一份笔记，值得的就 @ 你",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "bilibili",
+    "mcp",
+    "duty"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LittlefallenStar/dsh-bili-scroll.git"
+  },
+  "homepage": "https://github.com/LittlefallenStar/dsh-bili-scroll#readme",
+  "bugs": {
+    "url": "https://github.com/LittlefallenStar/dsh-bili-scroll/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "lib",
+    "prompts",
+    "vendor",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "engines": {
+    "dsh": ">=0.1.7-rc.1",
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

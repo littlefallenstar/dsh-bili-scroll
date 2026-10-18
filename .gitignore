@@ -1,0 +1,13 @@
+# 这个插件包自己的 git 仓库 —— 只装插件本体，别装用户数据
+node_modules/
+.venv/
+*.log
+*.bak*
+data/
+credential*.json
+seen_bvids.json
+out/
+log/
+
+# 给你本机双击用的脚本（里面有本机绝对路径），不进仓库
+*.cmd
