@@ -30,7 +30,7 @@ const createUserMessage = hostDeps.createUserMessage
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, dirname, resolve, isAbsolute, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { writeDigest } from './lib/digest.mjs'
@@ -40,7 +40,7 @@ import { pyEnv } from './lib/pyenv.mjs'
 import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, dayKey } from './lib/state.mjs'
 import { ensureToday, recordRound, setStatus, findItem, listDates, readToday, writeToday, parseMarker, parseReport, parseNote, upsertItem, upsertSkipped,
   // 2026-10-18：文件夹分组 + 删除（使用者要"像文件夹那样分级"）
-  addFolder, removeFolder, assignFolder, folderForRound, removeItem, removeSkipped, clearSkipped } from './lib/today.mjs'
+  ensureFolders, addFolder, removeFolder, assignFolder, folderForRound, rejectFolderId, ROOT_PICKS, ROOT_REJECTS, removeItem, removeSkipped, clearSkipped } from './lib/today.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
 
@@ -1576,7 +1576,7 @@ export function apply(ctx, config) {
       + `"## 为什么值得看" 写 **80~120 字（4~6 句）**，说到点子上就停，别铺陈 ——`
       + `就像最初那版日报那样，把"给谁看、能拿走什么、有什么坑"都说清楚。`
       + `\n  ⇒ 详细笔记/拓展知识仍留到面板「深挖」再写；这一轮写的是**为什么值得/为什么不推荐**。\n`
-      + `今天最多挑 ${cfg.perDay} 条；` + kwLine + `。`
+      + `这一轮就这么多，**不要**拿"今天已经刷过了"当理由少刷；` + kwLine + `。`
       // ⭐⭐ 2026-10-18：每份笔记末尾的 marker —— 宿主靠它建「今日列表」（没有它只能靠标题猜）
       + `\n  ⭐⭐ **每写完一份笔记，在文件末尾空一行再追加这一行**（JSON 必须一行、合法）：`
       + `\n  \`<!-- BILI_ITEM {"bvid":"BV…","score":0~10,"reason":"一句话结论","verdict":"pick"} -->\``
@@ -2044,7 +2044,11 @@ export function apply(ctx, config) {
           if (!it.toview) log(`加稍后再看失败：${it.bvid} ${String(JSON.stringify(r)).slice(0, 200)}`)
         } catch (e) { log(`加稍后再看失败：${it.bvid} ${e?.message ?? e}`) }
       }
-      if (want.some((x) => x.toview)) sawNonEmpty = true
+      if (want.some((x) => x.toview)) {
+        sawNonEmpty = true
+        // ⭐ 0.2.0：落盘 —— 重启后内存清零，不落盘的话「待看空了自动续刷」永远不触发
+        doc.meta = { ...(doc.meta || {}), sawNonEmpty: true }
+      }
       writeToday(stateDir, date, doc)
     }
     // ⭐ 这一轮看的**每一条**（推荐 + 不推荐）都进信里，所以按 newItems 取，不再过滤 verdict
@@ -2088,10 +2092,13 @@ export function apply(ctx, config) {
     // ⭐ 这一轮的这批视频，默认归到一个「第 N 轮 HH:MM」文件夹里（2026-10-18：
     //    使用者要"像文件夹那样分级"，默认每轮一个，能自己改名、能把视频拖来拖去）
     try {
+      // ⭐ 0.2.0：推荐的进「推荐列表 → 第 N 轮 HH:MM」，不推荐的直接进「不推荐」，
+      //    **不许**混进推荐列表（使用者 2026-10-18 晚点名）。
       const fid = folderForRound(doc, hm, rounds.length)
       for (const it of roundItems) {
         const row = doc.items.find((x) => x.bvid === it.bvid)
-        if (row && !row.folder) row.folder = fid
+        if (!row) continue
+        row.folder = String(row.verdict || 'pick') === 'reject' ? rejectFolderId() : fid
       }
     } catch { /* 分组失败不影响发信 */ }
     writeToday(stateDir, date, doc)
@@ -2108,6 +2115,7 @@ export function apply(ctx, config) {
       const date = dayKey()
       const doc = ensureToday(stateDir, date)
       const ingested = new Set(Array.isArray(doc.meta?.ingested) ? doc.meta.ingested : [])
+      const skipIgnored = new Set(Array.isArray(doc.meta?.skipIgnored) ? doc.meta.skipIgnored : [])
       let dir = ''
       try { dir = reportDirFor() } catch { dir = '' }
       let files = []
@@ -2170,6 +2178,7 @@ export function apply(ctx, config) {
             const why = rest.replace(/^跳过[：:]\s*/, '').trim() || '跳过'
             if (doc.items.some((x) => x.bvid === bvid)) continue
             if (doc.skipped.some((x) => x.bvid === bvid)) continue
+            if (skipIgnored.has(bvid)) continue
             upsertSkipped(doc, { bvid, title, reason: `跳过：${why}` })
             changed = true
           }
@@ -2182,6 +2191,7 @@ export function apply(ctx, config) {
         if (doc.items.some((x) => x.bvid === bvid)) continue
         if (doc.skipped.some((x) => x.bvid === bvid)) continue
         if (!/跳过|无字幕|不合适|不相关|太旧/.test(v.note || '')) continue
+        if (skipIgnored.has(bvid)) continue
         upsertSkipped(doc, { bvid, reason: v.note })
         changed = true
       }
@@ -2217,11 +2227,12 @@ export function apply(ctx, config) {
   const autoNextTick = async () => {
     if (!cfg.autoNext || !cfg.watchlaterEnabled || !hasCredential()) return
     // ⚠️ 网络轮询要节流：每 5 分钟看一次就够（60s 一次纯属浪费）
-    if (Date.now() - lastWatchCheck < 5 * 60000) return
+    if (Date.now() - lastWatchCheck < 2 * 60000) return
     lastWatchCheck = Date.now()
     const date = dayKey()
     const doc = readToday(stateDir, date)
     if (!doc?.items?.length) return
+    if (doc.meta?.sawNonEmpty) sawNonEmpty = true
     const tracked = doc.items.filter((x) => x.toview)
     if (!tracked.length) return                    // 还没往待看里放过 ⇒ 无从判断
     const remain = await toviewList()
@@ -2235,8 +2246,8 @@ export function apply(ctx, config) {
     }
     // ⭐ 空不等于马上续刷：连续两次读到空才动手（读空也可能是接口抽风）
     emptyStreak++
-    if (emptyStreak < 2) {
-      log(`待看疑似已清空（第 ${emptyStreak}/2 次确认）—— 下一次再看一眼`)
+    if (emptyStreak < 1) {
+      log(`待看疑似已清空（第 ${emptyStreak} 次确认）—— 下一次再看一眼`)
       return
     }
     // ⭐ 使用者的口径（2026-10-18 亲口定的）：「稍后再看清空了就算看完了」。
@@ -3016,6 +3027,8 @@ export function apply(ctx, config) {
       // ⭐ 面板一打开就当场对账（几毫秒，只扫今天的 md）—— 否则要等 tick 的 60 秒
       try { await reconcileToday({ reason: 'panel', mail: false }) } catch { /* 对账失败不影响看列表 */ }
       const doc = readToday(stateDir, date) || ensureToday(stateDir, date)
+      // 0.2.0：读的时候顺手把两个根文件夹（推荐列表 / 不推荐）和条目归属补齐 —— 老数据也能直接看到分级
+      try { ensureFolders(doc) } catch { /* 补不上就按空的显示 */ }
       return sendJson(res, 200, {
         ok: true,
         date,
@@ -3056,7 +3069,7 @@ export function apply(ctx, config) {
       const body = await readBody(req)
       const date = String(body?.date || dayKey()).slice(0, 10)
       const doc = readToday(stateDir, date) || ensureToday(stateDir, date)
-      const f = addFolder(doc, body?.name)
+      const f = addFolder(doc, body?.name, body?.parent)
       writeToday(stateDir, date, doc)
       return sendJson(res, 200, { ok: true, folder: f })
     }
@@ -3096,7 +3109,21 @@ export function apply(ctx, config) {
       const doc = readToday(stateDir, date)
       if (!doc) return sendJson(res, 404, { ok: false, error: '今天还没有表' })
       const bvid = String(body?.bvid || '').trim()
+      // ⭐ 0.2.0：删掉之后**不许**再被 reconcile 加回来 —— 记进 skipIgnored 黑名单
+      const ignored = new Set(Array.isArray(doc.meta?.skipIgnored) ? doc.meta.skipIgnored : [])
+      if (bvid) ignored.add(bvid)
+      else for (const x of doc.skipped || []) ignored.add(x.bvid)
+      doc.meta = { ...(doc.meta || {}), skipIgnored: [...ignored].slice(-500) }
       const n = bvid ? (removeSkipped(doc, bvid) ? 1 : 0) : clearSkipped(doc)
+      // 一键清空时把今天的 `_skip-*.txt` 改名，免得文件那边又把它们导回来
+      if (!bvid) {
+        try {
+          const dir = reportDirFor()
+          for (const f of readdirSync(dir).filter((x) => /^_skip-.*\.txt$/.test(x))) {
+            try { renameSync(join(dir, f), join(dir, f.replace(/\.txt$/, '.bak'))) } catch { /* 改不了就算了 */ }
+          }
+        } catch { /* 没有目录很正常 */ }
+      }
       writeToday(stateDir, date, doc)
       return sendJson(res, 200, { ok: true, removed: n })
     }

@@ -744,6 +744,9 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
       const [dayTick, setDayTick] = React.useState(0)          // 加一 = 重新拉列表
       // 2026-10-18：今日页的文件夹分组 —— 收起状态（`{folderId:true}`）与正在拖的 bvid
       const [folded, setFolded] = React.useState({})
+      // 0.2.0：新建文件夹的就地输入框（哪一层在新建 / 输入的名字）
+      const [mkdirAt, setMkdirAt] = React.useState('')
+      const [mkdirName, setMkdirName] = React.useState('')
       const dragRef = React.useRef('')
       const [today, setToday] = React.useState(null)
       const [todayBusy, setTodayBusy] = React.useState(false)
@@ -1189,22 +1192,24 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
         } catch (e) { say(String(e?.message ?? e), 'warn') } finally { setBusy('') }
       }
 
-      /* ── 文件夹分组 + 删除（2026-10-18 加，使用者要的「像文件夹那样分级」）── */
-      const onAddFolder = async () => {
-        const name = String(window.prompt('新文件夹的名字', '稍后再看') || '').trim()
-        if (!name) return
+      /* ── 文件夹分组 + 删除（0.2.0 重写）──
+         ⚠️ **不再用 window.prompt / window.confirm** —— 这个面板跑在侧栏槽位里，
+            两个原生对话框都弹不出来（"点了没反应"就是这个原因）。新建改成就地输入框，
+            删除直接执行（笔记文件不动，误删了重跑一轮还会回来）。 */
+      const onCreateFolder = async (parentId, rawName) => {
+        const name = String(rawName || '').trim() || '新文件夹'
         try {
-          const r = await jpost('/today/folder', { name, date: day })
+          const r = await jpost('/today/folder', { name, parent: parentId || '', date: day })
           if (r && r.ok === false) { say(r.error || '没建成', 'warn'); return }
+          setMkdirAt(''); setMkdirName('')
           say('文件夹已建好：' + name, 'good'); reloadToday()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const onDeleteFolder = async (id) => {
-        if (!window.confirm('删掉这个文件夹？（里面的视频会回到「未分组」，笔记不会删）')) return
         try {
           const r = await jdelete('/today/folder', { id, date: day })
           if (r && r.ok === false) { say(r.error || '没删掉', 'warn'); return }
-          reloadToday()
+          say('文件夹已删（里面的视频回上一层，笔记没动）', 'good'); reloadToday()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const onMove = async (bvid, folderId) => {
@@ -1215,11 +1220,10 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const onDeleteItem = async (bvid) => {
-        if (!window.confirm('把这条从今天的列表里删掉？（笔记文件还在）')) return
         try {
           const r = await jdelete('/today/item', { bvid, date: day })
           if (r && r.ok === false) { say(r.error || '没删掉', 'warn'); return }
-          say('已删除'); reloadToday()
+          say('已从今日列表删掉（笔记文件还在）'); reloadToday()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const onDeleteSkip = async (bvid) => {
@@ -1230,13 +1234,14 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const onClearSkip = async () => {
-        if (!window.confirm('清空今天「本次跳过」的全部记录？（不影响判重表）')) return
         try {
           const r = await jdelete('/today/skipped', { date: day })
           if (r && r.ok === false) { say(r.error || '没清掉', 'warn'); return }
-          say('已清空跳过列表', 'good'); reloadToday()
+          say('已清空跳过列表（下次也不会再导回来）', 'good'); reloadToday()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
+
+
 
       // ⭐ 保存人设：POST /persona ⇒ 落盘 persona.md。下一轮 promptFor() 现读 ⇒ 即时生效
       const onSavePersona = async () => {
@@ -1993,49 +1998,46 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
             ? h('div', { 'data-bd-note': '' }, '今天还没跑过 —— 点上面的『现在跑一轮』')
             : null,
 
-          /* ── 列表本体：按文件夹分组（2026-10-18 加）──
-             ⭐ 使用者的原话：「像文件夹那种分类分级」——默认每轮一个文件夹，
-                也可以自己建、把视频拖进去。拖拽用原生 HTML5（draggable + drop），
-                不引第三方库；拖不动时还有每行右下角那条兜底（不存在）。 */
-          h('div', { 'data-bd-row': '' },
-            h('div', { 'data-bd-grow': '' },
-              h('div', { 'data-bd-label': '' }, '文件夹'),
-              h('div', { 'data-bd-note': '' }, '按轮次自动分好；也可以自己建，把视频拖进去。')),
-            h('button', { 'data-bd-btn': '', onClick: onAddFolder }, '新建文件夹')),
-
+          /* ── 列表本体：按文件夹**分级**（0.2.0 重写）──
+             ⭐ 使用者的口径：默认那层叫「推荐列表」，不推荐的不许混进去；
+                推荐列表下面按**轮次**分（第 N 轮 HH:MM），所以是三层；**每一层**都能新建。
+             ⚠️ 新建文件夹**不再用 window.prompt** —— 面板里它弹不出来（点了没反应就这个原因），
+                改成点「新建」就地出现一个输入框。 */
           today && today.ok !== false && (today.items || []).length
             ? h('div', { 'data-bd-sub': '' }, (() => {
                 const items = today.items || []
                 const folders = today.folders || []
+                const byParent = new Map()
+                for (const f of folders) {
+                  const pid = f.parent || ''
+                  if (!byParent.has(pid)) byParent.set(pid, [])
+                  byParent.get(pid).push(f)
+                }
+                const roots = byParent.get('') || []
+                const itemsOf = (fid) => items.filter((it) => it.folder === fid)
                 const known = new Set(folders.map((f) => f.id))
-                const groups = folders.map((f) => ({
-                  id: f.id, name: f.name, own: true,
-                  items: items.filter((it) => it.folder === f.id),
-                }))
-                const loose = items.filter((it) => !it.folder || !known.has(it.folder))
-                if (loose.length) groups.unshift({ id: '', name: '未分组', own: false, items: loose })
+                const stray = items.filter((it) => !it.folder || !known.has(it.folder))
 
-                const folderRow = (g) => h('div', {
-                  'data-bd-row': '', key: 'f-' + (g.id || 'loose'),
-                  onDragOver: (e) => { e.preventDefault() },
-                  onDrop: (e) => {
-                    e.preventDefault()
-                    const bv = dragRef.current || (e.dataTransfer && e.dataTransfer.getData('text/plain'))
-                    dragRef.current = ''
-                    if (bv) onMove(bv, g.id)
-                  },
-                },
-                  h('div', {
-                    'data-bd-grow': '', style: { cursor: 'pointer' },
-                    onClick: () => setFolded((m) => ({ ...m, [g.id]: !m[g.id] })),
-                  },
-                    h('div', { 'data-bd-label': '' }, (folded[g.id] ? '▸ ' : '▾ ') + g.name),
-                    h('div', { 'data-bd-note': '' },
-                      g.items.length + ' 条 · 把视频拖到这一行就进这个文件夹')),
-                  g.own ? h('button', {
-                    'data-bd-btn': '', disabled: Boolean(busy),
-                    onClick: () => onDeleteFolder(g.id),
-                  }, '删') : null)
+                const mkdirRow = (parentId, depth) => h('div', { 'data-bd-row': '', key: 'mk-' + (parentId || 'root') },
+                  h('div', { 'data-bd-grow': '', style: { paddingLeft: (depth * 14) + 'px' } },
+                    h('input', {
+                      'data-bd-input': '', placeholder: '文件夹名字（回车确认）', value: mkdirName,
+                      autoFocus: true,
+                      onChange: (e) => setMkdirName(e.target.value),
+                      onKeyDown: (e) => {
+                        if (e.key === 'Enter') onCreateFolder(parentId, mkdirName)
+                        if (e.key === 'Escape') { setMkdirAt(''); setMkdirName('') }
+                      },
+                    })),
+                  h('div', { 'data-bd-ctl': '' },
+                    h('button', {
+                      'data-bd-btn': '', 'data-primary': '',
+                      onClick: () => onCreateFolder(parentId, mkdirName),
+                    }, '建'),
+                    h('button', {
+                      'data-bd-btn': '',
+                      onClick: () => { setMkdirAt(''); setMkdirName('') },
+                    }, '取消')))
 
                 const itemRow = (it) => h('div', {
                   'data-bd-vitem': '', key: it.bvid, draggable: true,
@@ -2078,12 +2080,60 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
                         onClick: () => onDeleteItem(it.bvid),
                       }, '删除'))))
 
-                return [].concat(...groups.map((g) => [
-                  folderRow(g),
-                  ...(folded[g.id] ? [] : g.items.map(itemRow)),
-                ]))
+                /* 一层文件夹 = 1 行标题 + (子文件夹 / 视频 / 新建输入框) */
+                const folderRows = (f, depth) => {
+                  const kids = byParent.get(f.id) || []
+                  const own = itemsOf(f.id)
+                  const rows = [h('div', {
+                    'data-bd-row': '', key: 'f-' + f.id,
+                    onDragOver: (e) => { e.preventDefault() },
+                    onDrop: (e) => {
+                      e.preventDefault()
+                      const bv = dragRef.current || (e.dataTransfer && e.dataTransfer.getData('text/plain'))
+                      dragRef.current = ''
+                      if (bv) onMove(bv, f.id)
+                    },
+                  },
+                    h('div', {
+                      'data-bd-grow': '', style: { cursor: 'pointer', paddingLeft: (depth * 14) + 'px' },
+                      onClick: () => setFolded((m) => ({ ...m, [f.id]: !m[f.id] })),
+                    },
+                      h('div', { 'data-bd-label': '' },
+                        (folded[f.id] ? '▸ ' : '▾ ') + f.name
+                        + (f.kind === 'root' ? '' : '')),
+                      h('div', { 'data-bd-note': '' },
+                        own.length + ' 条' + (kids.length ? ' · ' + kids.length + ' 个子文件夹' : '')
+                        + ' · 把视频拖到这一行就进这里')),
+                    h('div', { 'data-bd-ctl': '' },
+                      h('button', {
+                        'data-bd-btn': '',
+                        onClick: () => { setMkdirAt(f.id); setMkdirName('') },
+                      }, '新建'),
+                      f.kind === 'root' ? null : h('button', {
+                        'data-bd-btn': '', disabled: Boolean(busy),
+                        onClick: () => onDeleteFolder(f.id),
+                      }, '删')))]
+                  if (!folded[f.id]) {
+                    for (const k of kids) rows.push(...folderRows(k, depth + 1))
+                    for (const it of own) rows.push(itemRow(it))
+                    if (mkdirAt === f.id) rows.push(mkdirRow(f.id, depth + 1))
+                  }
+                  return rows
+                }
+
+                const rows = []
+                for (const r of roots) rows.push(...folderRows(r, 0))
+                if (stray.length) {
+                  rows.push(h('div', { 'data-bd-row': '', key: 'stray' },
+                    h('div', { 'data-bd-grow': '' },
+                      h('div', { 'data-bd-label': '' }, '（未归类）'),
+                      h('div', { 'data-bd-note': '' }, '老的、没来得及归类的条目'))))
+                  for (const it of stray) rows.push(itemRow(it))
+                }
+                return rows
               })())
             : null,
+
           /* ── 本次跳过：默认收起；展开后每行标题 + 「也放入」 + 「删除」 ──
              ⚠️ 标题之前全是「(无标题)」—— 根因是模型写的 `_skip` 行里只有 BV。
                 宿主现在会回填标题（reconcileToday 里用 bili_video_info 补，最多 8 条/次），
