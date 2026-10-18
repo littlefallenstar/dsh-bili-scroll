@@ -2035,6 +2035,66 @@ export function apply(ctx, config) {
    *    所以这里必须只取「本轮新收进来的」条目（`newBvids`），
    *    不能再拿 `doc.items`（那是当天累积的）。
    */
+  /**
+   * ⭐ 0.2.7：把攒着的「这一轮」发出去。
+   *
+   * 为什么要有它：同一轮的笔记是**分批**写出来的（模型边搜边写），每次 ingest 都会
+   * 触发一次收尾 ⇒ 原来会收到两封（"1 条" 和 "2 条"）。现在只登记 pendingMail，
+   * 等 90 秒没有新条目了才渲染 + 发一封。
+   */
+  const flushPendingMail = async (date) => {
+    const doc = readToday(stateDir, date)
+    if (!doc) return
+    const pend = doc.meta?.pendingMail
+    if (!pend || !Array.isArray(pend.bvids) || !pend.bvids.length) return
+    const idle = Date.now() - Date.parse(pend.lastAt || pend.firstAt || 0)
+    if (idle < 90000) return
+    const items = doc.items.filter((x) => pend.bvids.includes(x.bvid))
+    const key = `${date}|${pend.bvids.join(',')}`
+    if (doc.meta?.mailedKey === key || !items.length) {
+      doc.meta = { ...(doc.meta || {}), pendingMail: null }
+      writeToday(stateDir, date, doc)
+      return
+    }
+    const hm = pend.hm || '0000'
+    const hh2 = hm.slice(0, 2)
+    const mm2 = hm.slice(2, 4)
+    const th = Number(cfg.minScoreForMail || 0)
+    const top = items.reduce((m, x) => Math.max(m, Number(x.score) || 0), 0)
+    if (th > 0 && top < th) {
+      log(`发信跳过：本轮最高分 ${top} < 门槛 ${th}`)
+      doc.meta = { ...(doc.meta || {}), pendingMail: null, mailedKey: key, mailedSkipAt: new Date().toISOString() }
+      writeToday(stateDir, date, doc)
+      return
+    }
+    const { file, text } = buildDigest(date, items, { hm })
+    const pickCount = items.filter((x) => String(x.verdict || 'pick') !== 'reject').length
+    let ok = false
+    for (let i = 0; mailing && i < 50; i++) await new Promise((r) => setTimeout(r, 200))
+    mailing = true
+    try {
+      if (cfg.mailEnabled !== false) {
+        ok = await sendMailFor(file, `B站日报 ${date} ${hh2}:${mm2} · 看了 ${items.length} 条，${pickCount} 条推荐`)
+        if (ok) lastMailAt = Date.now()
+      } else {
+        log('发信跳过：邮箱没开（「环境与账号」里可开）')
+      }
+    } finally { mailing = false }
+    const ob = obsidianWrite([date, `round-${hm}.md`], text)
+    if (ob) log(`Obsidian 已写：${ob}`)
+    const rounds = Array.isArray(doc.meta?.rounds) ? doc.meta.rounds : []
+    rounds.push({ at: new Date().toISOString(), hm, bvids: items.map((x) => x.bvid), reason: pend.reason || 'round', mail: ok, obsidian: ob })
+    doc.meta = {
+      ...(doc.meta || {}),
+      rounds: rounds.slice(-50),
+      pendingMail: null,
+      mailedKey: ok ? key : (doc.meta?.mailedKey || ''),
+      mailedAt: ok ? new Date().toISOString() : doc.meta?.mailedAt,
+      autoNextAt: new Date().toISOString(),
+    }
+    writeToday(stateDir, date, doc)
+  }
+
   const postProcessRound = async (date, doc, { reason = '', newItems = [] } = {}) => {
     const now = new Date()
     const hh = String(now.getHours()).padStart(2, '0')
@@ -2084,54 +2144,34 @@ export function apply(ctx, config) {
       writeToday(stateDir, date, doc)
     }
 
-    const key = `${date}|${hm}|${roundItems.map((x) => x.bvid).join(',')}`
-    if (doc.meta?.mailedKey === key) return
-    const th = Number(cfg.minScoreForMail || 0)
-    const top = roundItems.reduce((m, x) => Math.max(m, Number(x.score) || 0), 0)
-    if (th > 0 && top < th) {
-      log(`发信跳过：本轮最高分 ${top} < 门槛 ${th}`)
-      doc.meta = { ...(doc.meta || {}), mailedKey: key, mailedSkipAt: new Date().toISOString() }
-      writeToday(stateDir, date, doc)
-      return
-    }
-    const { file, text } = buildDigest(date, roundItems, { hm })
-    const pickCount = roundItems.filter((x) => String(x.verdict || 'pick') !== 'reject').length
-    let ok = false
-    // 上一封还在发就**等一会儿**（不要直接 return —— 那样这一轮的信就永远发不出去了）
-    for (let i = 0; mailing && i < 50; i++) await new Promise((r) => setTimeout(r, 200))
-    mailing = true
-    try {
-    // ⭐ 2026-10-18：**每轮都发**。原来的"10 分钟内发过就不再发"把
-    //    「手动再跑一轮」的信也吃掉了（使用者：「点第二次没发报告」）。
-    //    重复跑同一份笔记由上面的 mailedKey 防住，不需要靠时间窗。
-    if (cfg.mailEnabled !== false) {
-      ok = await sendMailFor(file, `B站日报 ${date} ${hh}:${mm} · 看了 ${roundItems.length} 条，${pickCount} 条推荐`)
-      if (ok) lastMailAt = Date.now()
-    } else {
-      log('发信跳过：邮箱没开（「环境与账号」里可开）')
-    }
-    } finally { mailing = false }
-
-    const ob = obsidianWrite([date, `round-${hm}.md`], text)
-    if (ob) log(`Obsidian 已写：${ob}`)
-    const rounds = Array.isArray(doc.meta?.rounds) ? doc.meta.rounds : []
-    rounds.push({ at: now.toISOString(), hm, bvids: roundItems.map((x) => x.bvid), reason, mail: ok, obsidian: ob })
+    // ⭐ 0.2.7：登记到 pendingMail（90 秒没新增才发一封），不再每批都发
+    const p0 = doc.meta?.pendingMail
+    const merged = Array.from(new Set([
+      ...(Array.isArray(p0?.bvids) ? p0.bvids : []),
+      ...roundItems.map((x) => x.bvid),
+    ]))
     doc.meta = {
       ...(doc.meta || {}),
-      rounds: rounds.slice(-50),
-      mailedKey: ok ? key : (doc.meta?.mailedKey || ''),
-      mailedAt: ok ? new Date().toISOString() : doc.meta?.mailedAt,
-      // 2026-10-18：任何一轮跑完都盖个时间戳 —— 否则重启后 autoNextAt=0，
-      // 下一 tick 会立刻再续刷一轮（实测 12:53 刷完、12:54 又刷）。
-      autoNextAt: new Date().toISOString(),
+      pendingMail: {
+        bvids: merged,
+        firstAt: p0?.firstAt || now.toISOString(),
+        lastAt: now.toISOString(),
+        hm: p0?.hm || hm,
+        reason: p0?.reason || reason,
+      },
     }
+    // 定时器只是"催一下"：tick（每分钟）也会调 flushPendingMail，重启后照样能发
+    setTimeout(() => {
+      Promise.resolve(flushPendingMail(date)).catch((e) => log(`延时发信失败（已兜住）：${e?.message ?? e}`))
+    }, 95 * 1000).unref?.()
     // ⭐ 这一轮的这批视频，默认归到一个「第 N 轮 HH:MM」文件夹里（2026-10-18：
     //    使用者要"像文件夹那样分级"，默认每轮一个，能自己改名、能把视频拖来拖去）
     try {
       // ⭐ 0.2.0：推荐的进「推荐列表 → 第 N 轮 HH:MM」，不推荐的直接进「不推荐」，
       //    **不许**混进推荐列表（使用者 2026-10-18 晚点名）。
-      const fid = folderForRound(doc, hm, rounds.length, ROOT_PICKS)
-      const jid = folderForRound(doc, hm, rounds.length, ROOT_REJECTS)
+      const roundCount = (doc.meta?.rounds?.length || 0) + 1
+      const fid = folderForRound(doc, hm, roundCount, ROOT_PICKS)
+      const jid = folderForRound(doc, hm, roundCount, ROOT_REJECTS)
       for (const it of roundItems) {
         const row = doc.items.find((x) => x.bvid === it.bvid)
         if (!row) continue
@@ -2234,6 +2274,16 @@ export function apply(ctx, config) {
         upsertSkipped(doc, { bvid, reason: v.note })
         changed = true
       }
+      // ⭐ 0.2.7：**笔记文件删了，这条也要从列表里消失**。
+      //    使用者的要求：「删掉文件就会删掉里面的视频」—— 所以以磁盘为准（文件不在 = 不显示）。
+      for (const it of [...doc.items]) {
+        if (!it.notePath) continue
+        if (existsSync(it.notePath)) continue
+        removeItem(doc, it.bvid)
+        changed = true
+        log(`今日表：${it.bvid} 的笔记文件不在了，从列表里去掉`)
+      }
+
       // ⭐ 2026-10-18：面板上跳过一栏全是「(无标题)」⇒ 这里拿 BV 号去补标题（每次最多补 8 条，
       //    只在有凭证时补；补不到就算了，不挡流程）。
       const needTitle = doc.skipped.filter((x) => !x.title).slice(0, 8)
@@ -2665,6 +2715,8 @@ export function apply(ctx, config) {
    */
   let lastPruneAt = 0
   const tick = () => {
+    // 有待发的"这一轮"就检查一下（90 秒空闲才真的发）
+    Promise.resolve(flushPendingMail(dayKey())).catch((e) => log(`发信检查失败（已兜住）：${e?.message ?? e}`))
     // 0.2.6：todayKeepDays 真正生效（每小时最多跑一次；只把超出天数的 old 文件清空）
     if (Date.now() - lastPruneAt > 3600000) {
       lastPruneAt = Date.now()

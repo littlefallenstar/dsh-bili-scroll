@@ -2109,6 +2109,9 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
 
                 /* 一层文件夹 = 1 行标题 + (子文件夹 / 视频 / 新建输入框) */
                 const folderRows = (f, depth) => {
+                  // ⭐ 0.2.7：**轮次文件夹默认收起**（使用者：「轮次文件里的视频默认打开太乱」）
+                  //    两个根（推荐列表 / 不推荐）默认展开；用户点一下仍然能展开/收起。
+                  const isFolded = folded[f.id] !== undefined ? folded[f.id] : f.kind === 'round'
                   const kids = byParent.get(f.id) || []
                   const own = itemsOf(f.id)
                   const rows = [h('div', {
@@ -2126,7 +2129,7 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
                       onClick: () => setFolded((m) => ({ ...m, [f.id]: !m[f.id] })),
                     },
                       h('div', { 'data-bd-label': '' },
-                        (folded[f.id] ? '▸ ' : '▾ ') + f.name
+                        (isFolded ? '▸ ' : '▾ ') + f.name
                         + (f.kind === 'root' ? '' : '')),
                       h('div', { 'data-bd-note': '' },
                         own.length + ' 条' + (kids.length ? ' · ' + kids.length + ' 个子文件夹' : '')
@@ -2140,7 +2143,7 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
                         'data-bd-btn': '', disabled: Boolean(busy),
                         onClick: () => onDeleteFolder(f.id),
                       }, '删')))]
-                  if (!folded[f.id]) {
+                  if (!isFolded) {
                     for (const k of kids) rows.push(...folderRows(k, depth + 1))
                     for (const it of own) rows.push(itemRow(it))
                     if (mkdirAt === f.id) rows.push(mkdirRow(f.id, depth + 1))
