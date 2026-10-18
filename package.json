@@ -19,6 +19,11 @@
     "url": "https://github.com/LittlefallenStar/dsh-bili-scroll/issues"
   },
   "license": "MIT",
+  "author": "LittlefallenStar (https://github.com/LittlefallenStar)",
+  "contributors": [
+    "c1overzz (https://github.com/c1overzz/dsh-bili-scroll)",
+    "jojoman2024 (https://github.com/jojoman2024/dsh-bili-scroll)"
+  ],
   "type": "module",
   "main": "index.js",
   "exports": {

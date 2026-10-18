@@ -113,15 +113,25 @@
 
 ## 这版从哪来
 
-上游 [jojoman2024/dsh-bili-scroll](https://github.com/jojoman2024/dsh-bili-scroll)
-→ 再上游 [c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)。
+两层上游，都是 MIT 许可：
 
-这一支在 0.1.4 之上做了：今日列表与文件夹分级、每轮总结（邮件 / Obsidian）、
-稍后再看联动与自动续刷、单轮闸、跳过留痕、深挖写详细笔记。
+| 层 | 仓库 | 作者 |
+|---|---|---|
+| 初版 | [c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll) | [@凌羽clover](https://space.bilibili.com/354813103) |
+| 分支 | [jojoman2024/dsh-bili-scroll](https://github.com/jojoman2024/dsh-bili-scroll) | [@闲人JOJO](https://space.bilibili.com/3706942742595667) |
+| 这一支 | [LittlefallenStar/dsh-bili-scroll](https://github.com/LittlefallenStar/dsh-bili-scroll) | 本仓库 |
+
+- **初版**给了整个骨架：定时跑一轮 → 搜视频 → 读字幕原文 → 写笔记 → 发信。
+- **分支（JOJO 的）**加了：右侧栏入口、前台会话里跑任务、搜索排序筛选、
+  单条深挖落档、插件工具与对模型行为的硬校验。
+- **这一支**在分支的 0.1.4 之上再做：三种反馈端（QQ 邮箱 / Obsidian / 稍后再看）、
+  三层搜索（关键词 / 主题 / 搜索意图）、评分与文件夹分级、笔记详略可选、
+  可选自动点赞（只点赞）、待看清空自动续刷、单轮闸、跳过留痕。
 
 - 逐版变动：[`CHANGELOG.md`](CHANGELOG.md)
 - 为什么这么改（含踩过的坑）：[`docs/开发日志.md`](docs/开发日志.md)
 
 ## License
 
-MIT
+MIT，保留上游版权声明：`Copyright (c) 2026 dsh-bili-duty contributors`。
+本仓库的修改部分同样以 MIT 发布，完整条款见 [`LICENSE`](LICENSE)。
