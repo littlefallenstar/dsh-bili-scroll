@@ -943,6 +943,13 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
       }
       // 组件卸载时清掉定时器（不清的话，卸载后 setState 会报警告）
       React.useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+      // 🔴 0.2.5：兜底自动消失 —— 使用者反馈那条「上一轮还在跑…」一直挡在屏幕中间。
+      //    定时器可能被卸载/重渲染吃掉，这里再加一道：任何 toast 最多留 7 秒。
+      React.useEffect(() => {
+        if (!runNote) return undefined
+        const t = setTimeout(() => setRunNote(null), 7000)
+        return () => clearTimeout(t)
+      }, [runNote])
 
       const patch = async (p, what) => {
         setBusy(JSON.stringify(p))

@@ -2168,7 +2168,8 @@ export function apply(ctx, config) {
         if (!it) continue
         // ⭐ 2026-10-18 改口径：**看过的每条都进列表**（推荐/不推荐都算一条），
         //    以前"不推荐的只进 skipped 表" ⇒ 信里就变成了"4 条推荐 + 10 条跳过"那种数字。
-        upsertItem(doc, { ...it, verdict: it.verdict === 'reject' ? 'reject' : 'pick', notePath: join(dir, f) })
+        const okRow = upsertItem(doc, { ...it, verdict: it.verdict === 'reject' ? 'reject' : 'pick', notePath: join(dir, f) })
+        if (!okRow) { log(`跳过一条：BV 号不合法 ${it.bvid}`); continue }
         newItems.push({ bvid: it.bvid, verdict: it.verdict === 'reject' ? 'reject' : 'pick', reason: it.reason || '' })
         added++
       }
@@ -3084,7 +3085,11 @@ export function apply(ctx, config) {
     if (req.method === 'GET' && path === '/api/bili-duty/today') {
       const date = String(url.searchParams.get('date') || dayKey()).slice(0, 10)
       // ⭐ 面板一打开就当场对账（几毫秒，只扫今天的 md）—— 否则要等 tick 的 60 秒
-      try { await reconcileToday({ reason: 'panel', mail: false }) } catch { /* 对账失败不影响看列表 */ }
+      // 🔴 0.2.5：**这里必须 mail:true**。面板每 15 秒自动重取一次，它会先把笔记
+      //    并进今日表（记为已 ingest）；等定时器那一次再来对账时 added 已经是 0，
+      //    ⇒ postProcessRound 不触发 ⇒ 不发信、不分组、不加稍后再看（"第二轮以后没反应"）。
+      //    重复发信由 postProcessRound 里的 mailedKey 挡住，不会重复发。
+      try { await reconcileToday({ reason: 'panel', mail: true }) } catch { /* 对账失败不影响看列表 */ }
       const doc = readToday(stateDir, date) || ensureToday(stateDir, date)
       // 0.2.0：读的时候顺手把两个根文件夹（推荐列表 / 不推荐）和条目归属补齐 —— 老数据也能直接看到分级
       try { ensureFolders(doc); writeToday(stateDir, date, doc) } catch { /* 补不上就按空的显示 */ }
