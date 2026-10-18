@@ -1866,6 +1866,7 @@ export function apply(ctx, config) {
   let reconciling = false
   let autoNextAt = 0
   let lastWatchCheck = 0
+  let lastAutoNextLog = 0
   // ⭐ 「待看已清空」要**连续两次**确认才算（每 5 分钟一次 ⇒ 最短 10 分钟）。
   //    单次读空可能只是接口抽风/刚加进去还没刷出来 —— 2026-10-18 就误触发过一轮。
   let emptyStreak = 0
@@ -2054,6 +2055,10 @@ export function apply(ctx, config) {
       }
       writeToday(stateDir, date, doc)
     }
+    // ⭐ 这一轮看的**每一条**（推荐 + 不推荐）都进信里，所以按 newItems 取，不再过滤 verdict
+    const roundItems = newBvids.length ? doc.items.filter((x) => newBvids.includes(x.bvid)) : []
+    if (!roundItems.length) return
+
     // ⭐ 0.2.1：推荐的自动点赞（只有赞，不投币不收藏）—— 开关在面板「功能设置」
     if (cfg.autoLike && hasCredential()) {
       for (const it of roundItems) {
@@ -2070,9 +2075,6 @@ export function apply(ctx, config) {
       writeToday(stateDir, date, doc)
     }
 
-    // ⭐ 这一轮看的**每一条**（推荐 + 不推荐）都进信里，所以按 newItems 取，不再过滤 verdict
-    const roundItems = newBvids.length ? doc.items.filter((x) => newBvids.includes(x.bvid)) : []
-    if (!roundItems.length) return
     const key = `${date}|${hm}|${roundItems.map((x) => x.bvid).join(',')}`
     if (doc.meta?.mailedKey === key) return
     const th = Number(cfg.minScoreForMail || 0)
@@ -2086,14 +2088,12 @@ export function apply(ctx, config) {
     const { file, text } = buildDigest(date, roundItems, { hm })
     const pickCount = roundItems.filter((x) => String(x.verdict || 'pick') !== 'reject').length
     let ok = false
-    // 10 分钟内已经发过一封（典型场景：自动续刷刚跑完，人又手动点了一下）
-    // ⇒ 不再补发第二封，避免同一个「刷一轮」收到两封信。
-    const recent = lastMailAt && (Date.now() - lastMailAt < 10 * 60000)
-    if (cfg.mailEnabled !== false && !recent) {
+    // ⭐ 2026-10-18：**每轮都发**。原来的"10 分钟内发过就不再发"把
+    //    「手动再跑一轮」的信也吃掉了（使用者：「点第二次没发报告」）。
+    //    重复跑同一份笔记由上面的 mailedKey 防住，不需要靠时间窗。
+    if (cfg.mailEnabled !== false) {
       ok = await sendMailFor(file, `B站日报 ${date} ${hh}:${mm} · 看了 ${roundItems.length} 条，${pickCount} 条推荐`)
       if (ok) lastMailAt = Date.now()
-    } else if (recent) {
-      log(`发信跳过：${Math.round((Date.now() - lastMailAt) / 60000)} 分钟前刚发过一封（这轮已写进 Obsidian / 今日）`)
     }
     const ob = obsidianWrite([date, `round-${hm}.md`], text)
     if (ob) log(`Obsidian 已写：${ob}`)
@@ -2231,7 +2231,14 @@ export function apply(ctx, config) {
       doc.meta = { ...(doc.meta || {}), ingested: [...ingested].slice(-800), lastReconcileAt: new Date().toISOString() }
       if (changed) writeToday(stateDir, date, doc)
       if (added || changed) log(`今日表：${date} 新增 ${added} 条（产物 ${files.length} 个）`)
-      if (mail && added) await postProcessRound(date, doc, { reason, newItems })
+      if (mail && added) {
+        try {
+          await postProcessRound(date, doc, { reason, newItems })
+        } catch (e) {
+          // 收尾失败（发信/分组）不许把整轮吞掉：写日志、继续往下走
+          log(`收尾失败（发信/分组）：${e?.stack ?? e}`)
+        }
+      }
       // ⭐ 今日额度真的累加（0.1.4 里 count 从来没加过 ⇒ 「每天最多几条」形同虚设）
       if (added) {
         try {
@@ -2246,7 +2253,14 @@ export function apply(ctx, config) {
 
   /** 待看列表清空 ⇒ 自动续刷（使用者要的「看完就继续下一轮」） */
   const autoNextTick = async () => {
-    if (!cfg.autoNext || !cfg.watchlaterEnabled || !hasCredential()) return
+    if (!cfg.autoNext || !cfg.watchlaterEnabled || !hasCredential()) {
+      // 只在"该开没开"时提示一次，免得每分钟刷屏
+      if (cfg.autoNext && !cfg.watchlaterEnabled && Date.now() - lastAutoNextLog > 600000) {
+        lastAutoNextLog = Date.now()
+        log('自动续刷没生效：开了"自动续刷"，但"把推荐加进稍后再看"是关的 —— 两边都要开')
+      }
+      return
+    }
     // ⚠️ 网络轮询要节流：每 5 分钟看一次就够（60s 一次纯属浪费）
     if (Date.now() - lastWatchCheck < 2 * 60000) return
     lastWatchCheck = Date.now()
@@ -2255,9 +2269,9 @@ export function apply(ctx, config) {
     if (!doc?.items?.length) return
     if (doc.meta?.sawNonEmpty) sawNonEmpty = true
     const tracked = doc.items.filter((x) => x.toview)
-    if (!tracked.length) return                    // 还没往待看里放过 ⇒ 无从判断
+    if (!tracked.length) { log('自动续刷：今天还没有加过稍后再看的视频，无从判断'); return }                    // 还没往待看里放过 ⇒ 无从判断
     const remain = await toviewList()
-    if (!remain) return
+    if (!remain) { log('自动续刷：这次读不到稍后再看，下个周期再看'); return }
     if (remain.length) sawNonEmpty = true
     if (tracked.some((x) => remain.includes(x.bvid))) { emptyStreak = 0; return }   // 还有没看的
     // 一次都没见过它非空（刚装/刚重置/加待看全失败）⇒ 现在读到的"空"不算数。
@@ -3068,6 +3082,20 @@ export function apply(ctx, config) {
       const bvid = String(body?.bvid || '').trim()
       const it = setStatus(stateDir, date, bvid, 'promoted')
       if (!it) return sendJson(res, 404, { ok: false, error: '这条不在今天的表里' })
+      // ⭐ 0.2.2：点「放入」就真的挪到「推荐列表」（否则还挂在不推荐下面，看着像没生效）
+      try {
+        const doc0 = readToday(stateDir, date)
+        if (doc0) {
+          const list = ensureFolders(doc0)
+          const f = list.find((x) => x.id === it.folder)
+          if (!f || f.id === ROOT_REJECTS || (f.kind === 'round' && f.parent === ROOT_REJECTS)) {
+            it.folder = ROOT_PICKS
+            const row = doc0.items.find((x) => x.bvid === bvid)
+            if (row) row.folder = ROOT_PICKS
+            writeToday(stateDir, date, doc0)
+          }
+        }
+      } catch { /* 挪不动不影响"已放入"这个状态 */ }
       log(`今日表：${bvid} 改为「已放入」`)
       return sendJson(res, 200, { ok: true, item: it })
     }
