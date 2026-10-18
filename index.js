@@ -1770,6 +1770,10 @@ export function apply(ctx, config) {
    *    活着返回 true、不存在抛 ESRCH。⚠️ 抛 EPERM 也算"活着"（进程在、只是没权限）。
    */
   let activeHeadless = null
+  // 🔴 2026-10-18：**同一时间只允许一轮**。之前没有这个闸 —— 自动续刷每 2 分钟判一次，
+  //    上一轮还没跑完就又起一轮，实测同时有 3 个 dsh 子进程（16:49 / 16:51 / 16:51），
+  //    互相抢 mcp/写同一份今日表，界面就一直卡在「正在后台运行…」。
+  let dutyRunning = false
   /** ⭐ 深挖那一轮跑完要发「单条笔记」的信：记下它是给谁的（exit 时用） */
   let pendingDeep = null
   const headlessRunFile = join(stateDir, 'running.json')
@@ -2270,6 +2274,7 @@ export function apply(ctx, config) {
     if (doc.meta?.sawNonEmpty) sawNonEmpty = true
     const tracked = doc.items.filter((x) => x.toview)
     if (!tracked.length) { log('自动续刷：今天还没有加过稍后再看的视频，无从判断'); return }                    // 还没往待看里放过 ⇒ 无从判断
+    if (dutyRunning) { log('自动续刷：上一轮还在跑，这轮先不判'); return }
     const remain = await toviewList()
     if (!remain) { log('自动续刷：这次读不到稍后再看，下个周期再看'); return }
     if (remain.length) sawNonEmpty = true
@@ -2509,6 +2514,11 @@ export function apply(ctx, config) {
   }
 
   const runDuty = (why = 'window') => {
+    // 🔴 已经有一轮在跑就不许再起（否则两个模型同时改同一份产物）
+    if (dutyRunning) {
+      log(`刷B站跳过：上一轮还没跑完（这次是 ${why}）`)
+      return { started: false, busy: true }
+    }
     // ⭐ 每开一轮就**清空候选池** —— 池子是"这一轮"的，不跨轮次（跨轮的判重看 seen.md）。
     poolStart()
 
@@ -2576,6 +2586,14 @@ export function apply(ctx, config) {
      *
      * ⚠️ 只跟踪**后台**那条 —— 前台那轮是主应用里的会话，你看得见它，不需要这个标。
      */
+    dutyRunning = true
+    // 兜底：单轮超过 45 分钟直接收掉 —— 面板上就不会再出现"一直在后台运行"。
+    const killTimer = setTimeout(() => {
+      try { child.kill() } catch { /* 杀不掉也没别的办法 */ }
+      log(`刷B站超时（${why}）：超过 45 分钟，已强行结束`)
+    }, 45 * 60 * 1000)
+    if (killTimer.unref) killTimer.unref()
+
     activeHeadless = { pid: child.pid || 0, at: new Date().toISOString(), why: String(why) }
     try {
       writeJson(headlessRunFile, activeHeadless)
@@ -2583,6 +2601,8 @@ export function apply(ctx, config) {
 
     const finish = (what, code) => {
       log(`刷B站结束（${why}${code === undefined ? '' : '，code=' + code}）${what ? '：' + what : ''}`)
+      dutyRunning = false
+      clearTimeout(killTimer)
       activeHeadless = null
       // ⚠️ 只在**还是这一轮**的时候删文件 —— 免得把刚起的新一轮的记录误删
       try {

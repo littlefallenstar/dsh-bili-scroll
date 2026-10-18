@@ -1123,6 +1123,9 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
               //    ⚠️ 所以这里不写死路径，而是用状态里那份真值（读不到就退化成不带路径的说法）。
               say(`已经在后台跑一轮了 —— 挑中的每条会各写一份 md 到 ${st?.reportDir || '产物目录'}`, 'good')
             }
+          } else if (r?.busy) {
+            // 🔴 0.2.4：有一轮还没跑完时后端直接拒掉（不再并行起第二个子进程）
+            setRunNote({ tone: 'warn', t: '上一轮还在跑 —— 等它跑完，别两个同时跑（会互相抢产物）' })
           } else {
             // ⚠️ 如实回显失败原因（前台模式失败的原因往往是"服务拿不到"，不是"跑挂了"）
             setRunNote({ tone: 'warn', t: r?.error ? `没起来：${r.error}` : '没起来，看 duty.log' })
@@ -1422,6 +1425,10 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
                   '正在后台跑 —— 日志：' + (st.log || '（读不到路径）')
                   + '（用「打开家目录」按钮能找到它；跑完这个标会自己消失）', 'good'),
               }, '正在后台运行…')
+              : null,
+            st.headless?.running && st.headless?.at
+              ? h('span', { 'data-bd-badge': '', title: '这一轮是什么时候开始的' },
+                Math.max(0, Math.round((Date.now() - new Date(st.headless.at).getTime()) / 60000)) + ' 分钟')
               : null,
             h('div', { 'data-bd-grow': '' }),
             h('button', { 'data-bd-btn': '', 'data-primary': '', disabled: busy === 'run', onClick: onRun }, '现在跑一轮')),
