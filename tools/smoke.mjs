@@ -3,7 +3,7 @@
  * 直接在假 ctx 上挂路由，用假 req/res 打一遍 /today 系列，验证：
  *   ① 只认"今天的产物"；② marker 解析；③ 跳过表；④ promote 升级；⑤ 幂等（跑两遍条目数不变）
  *
- * 跑：DSH_HOST_MODULES=<profile>/node_modules/@deepseek-ai node --import ./tools/register.mjs _smoke.mjs
+ * 跑：DSH_HOST_MODULES=<profile>/node_modules/@deepseek-ai node --import ./tools/register.mjs tools/smoke.mjs
  */
 import { mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,7 +26,7 @@ const fakeCtx = {
   slots: { inject: () => {}, register: () => ({}) },
 }
 
-const mod = await import('./index.js')
+const mod = await import('../index.js')
 mod.apply(fakeCtx, {})
 if (!routes) throw new Error('没有挂上 webServer 路由')
 
