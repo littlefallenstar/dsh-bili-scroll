@@ -205,6 +205,8 @@ export const Config = !z ? undefined : z.object({
   /** ⭐ 只在最高分 ≥ N 时才发信（0 = 都发） */
   minScoreForMail: z.natural().default(0).extra('volatile', true),
   /** ⭐ 待看列表清空后自动再刷一轮 */
+  // 2026-10-18：推荐的自动点赞（只有赞，不投币不收藏；默认关）
+  autoLike: z.boolean().default(false).extra('volatile', true),
   autoNext: z.boolean().default(false).extra('volatile', true),
   /** 自动续刷的最小间隔（分钟） */
   autoNextIntervalMin: z.natural().default(10).extra('volatile', true),
@@ -299,6 +301,7 @@ export function apply(ctx, config) {
     personaEnabled: true, personaMaxChars: 8000,
     llmProvider: '', llmModel: '', llmReasoningEffort: '',
     searchIntent: '', mailEnabled: true, mailTo: '', minScoreForMail: 0,
+    autoLike: false,             // 推荐的视频自动点赞（只有赞）
     autoNext: false, autoNextIntervalMin: 10, autoNextMaxRounds: 3, watchlaterEnabled: false, triageEnabled: false,
     deepMode: 'brief', todayKeepDays: 60,
     perRound: 5, candidatesPerRound: 5, obsidianEnabled: false, obsidianDir: '', obsidianSubdir: 'B站日报',
@@ -2051,6 +2054,22 @@ export function apply(ctx, config) {
       }
       writeToday(stateDir, date, doc)
     }
+    // ⭐ 0.2.1：推荐的自动点赞（只有赞，不投币不收藏）—— 开关在面板「功能设置」
+    if (cfg.autoLike && hasCredential()) {
+      for (const it of roundItems) {
+        if (String(it.verdict || 'pick') === 'reject') continue
+        const row = doc.items.find((x) => x.bvid === it.bvid)
+        if (!row || row.liked) continue
+        try {
+          const r = await call('bili_like', { bvid: it.bvid }, { timeoutMs: 60000 })
+          const ok = Boolean(r && (r.ok === true || r.success === true || r.code === 0))
+          if (ok) { row.liked = true; log(`已点赞：${it.bvid}`) }
+          else log(`点赞失败：${it.bvid} ${String(JSON.stringify(r)).slice(0, 200)}`)
+        } catch (e) { log(`点赞失败：${it.bvid} ${e?.message ?? e}`) }
+      }
+      writeToday(stateDir, date, doc)
+    }
+
     // ⭐ 这一轮看的**每一条**（推荐 + 不推荐）都进信里，所以按 newItems 取，不再过滤 verdict
     const roundItems = newBvids.length ? doc.items.filter((x) => newBvids.includes(x.bvid)) : []
     if (!roundItems.length) return
@@ -2094,11 +2113,13 @@ export function apply(ctx, config) {
     try {
       // ⭐ 0.2.0：推荐的进「推荐列表 → 第 N 轮 HH:MM」，不推荐的直接进「不推荐」，
       //    **不许**混进推荐列表（使用者 2026-10-18 晚点名）。
-      const fid = folderForRound(doc, hm, rounds.length)
+      const fid = folderForRound(doc, hm, rounds.length, ROOT_PICKS)
+      const jid = folderForRound(doc, hm, rounds.length, ROOT_REJECTS)
       for (const it of roundItems) {
         const row = doc.items.find((x) => x.bvid === it.bvid)
         if (!row) continue
-        row.folder = String(row.verdict || 'pick') === 'reject' ? rejectFolderId() : fid
+        // ⭐ 0.2.1：不推荐的进「不推荐 → 第 N 轮」，推荐的进「推荐列表 → 第 N 轮」
+        row.folder = String(row.verdict || 'pick') === 'reject' ? jid : fid
       }
     } catch { /* 分组失败不影响发信 */ }
     writeToday(stateDir, date, doc)
@@ -2894,7 +2915,7 @@ export function apply(ctx, config) {
         'personaEnabled', 'personaMaxChars',
         'llmProvider', 'llmModel', 'llmReasoningEffort',
         'searchIntent', 'mailEnabled', 'mailTo', 'minScoreForMail',
-        'autoNext', 'autoNextIntervalMin', 'autoNextMaxRounds', 'watchlaterEnabled', 'triageEnabled', 'deepMode', 'todayKeepDays',
+        'autoLike', 'autoNext', 'autoNextIntervalMin', 'autoNextMaxRounds', 'watchlaterEnabled', 'triageEnabled', 'deepMode', 'todayKeepDays',
         'perRound', 'candidatesPerRound', 'obsidianEnabled', 'obsidianDir', 'obsidianSubdir']) {
         if (k in body) patch[k] = body[k]
       }
@@ -2919,7 +2940,7 @@ export function apply(ctx, config) {
       if ('obsidianEnabled' in patch) patch.obsidianEnabled = Boolean(patch.obsidianEnabled)
       if ('searchIntent' in patch) patch.searchIntent = String(patch.searchIntent ?? '').slice(0, 500)
       if ('mailTo' in patch) patch.mailTo = String(patch.mailTo ?? '').slice(0, 200)
-      for (const k of ['mailEnabled', 'autoNext', 'watchlaterEnabled', 'triageEnabled']) {
+      for (const k of ['mailEnabled', 'autoLike', 'autoNext', 'watchlaterEnabled', 'triageEnabled']) {
         if (k in patch) patch[k] = Boolean(patch[k])
       }
       if ('perDay' in patch) patch.perDay = Math.max(0, Math.min(Number(patch.perDay) || 0, 50))
@@ -3028,7 +3049,7 @@ export function apply(ctx, config) {
       try { await reconcileToday({ reason: 'panel', mail: false }) } catch { /* 对账失败不影响看列表 */ }
       const doc = readToday(stateDir, date) || ensureToday(stateDir, date)
       // 0.2.0：读的时候顺手把两个根文件夹（推荐列表 / 不推荐）和条目归属补齐 —— 老数据也能直接看到分级
-      try { ensureFolders(doc) } catch { /* 补不上就按空的显示 */ }
+      try { ensureFolders(doc); writeToday(stateDir, date, doc) } catch { /* 补不上就按空的显示 */ }
       return sendJson(res, 200, {
         ok: true,
         date,

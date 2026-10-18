@@ -1559,6 +1559,62 @@ async def bili_toview_add(bvid: str) -> str:
     }, ensure_ascii=False)
 
 
+# ========== 点赞（2026-10-18 加：推荐的自动点赞）==========
+
+
+def _like_fail(error: str, **extra) -> str:
+    payload = {"success": False, "error": error}
+    payload.update({k: v for k, v in extra.items() if v is not None})
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@mcp.tool()
+async def bili_like(bvid: str) -> str:
+    """
+    给视频点赞（需要登录；只点赞，不投币不收藏）
+
+    Args:
+        bvid: 视频BV号，如 "BV1GJ411x7h7"
+
+    Returns:
+        JSON，成功时 success=True；失败时 success=False 并给出中文原因
+
+    ⚠️ 幂等：已赞过的再调一次，B站会返回 code=65004（已赞）—— 这里当作成功，
+       因为使用者要的就是"推荐的那条点了赞"，不关心是第几次点的。
+    """
+    bvid = (bvid or "").strip()
+    if not bvid:
+        return _like_fail("bvid 不能为空", hint="请传入形如 BV1GJ411x7h7 的BV号")
+
+    try:
+        cred = get_cred()
+    except Exception as e:
+        return _like_fail(str(e), hint="请先调用 bili_login 扫码登录")
+    if not getattr(cred, "bili_jct", ""):
+        return _like_fail(
+            "凭证缺少 bili_jct（csrf），无法执行写操作",
+            hint="请调用 bili_login 重新扫码登录",
+        )
+
+    try:
+        v = video.Video(bvid=bvid, credential=cred)
+        result = await v.like(True)
+    except Exception as e:
+        msg = str(e)
+        # 已赞：库会把 code 65004 抛成异常
+        if "65004" in msg or "已经赞过" in msg or "重复" in msg:
+            return json.dumps({"success": True, "bvid": bvid, "already": True,
+                               "message": f"{bvid} 之前已经点过赞了"}, ensure_ascii=False)
+        return _like_fail(f"点赞失败: {msg}", bvid=bvid)
+
+    return json.dumps({
+        "success": True,
+        "message": f"已给 {bvid} 点赞",
+        "bvid": bvid,
+        "data": result if isinstance(result, dict) else str(result),
+    }, ensure_ascii=False)
+
+
 # ========== 启动 ==========
 
 if __name__ == "__main__":

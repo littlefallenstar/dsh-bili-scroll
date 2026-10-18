@@ -2242,6 +2242,13 @@ select[data-bd-input],[data-bd-select]{cursor:pointer;appearance:none;-webkit-ap
           }),
 
           h(ToggleRow, {
+            label: '推荐的自动点赞',
+            note: '判成「值得看」的那几条，跑完顺手点个赞（只点赞，不投币不收藏）。',
+            on: sw('autoLike'),
+            onChange: (v) => patch({ autoLike: v }, '自动点赞'),
+          }),
+
+          h(ToggleRow, {
             label: '两级粗筛',
             note: '先粗筛一遍再细读：省 token、跑得快，但可能漏掉擦边的。',
             on: sw('triageEnabled'),
