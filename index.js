@@ -40,7 +40,7 @@ import { pyEnv } from './lib/pyenv.mjs'
 import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, dayKey } from './lib/state.mjs'
 import { ensureToday, recordRound, setStatus, findItem, listDates, readToday, writeToday, parseMarker, parseReport, parseNote, upsertItem, upsertSkipped,
   // 2026-10-18：文件夹分组 + 删除（使用者要"像文件夹那样分级"）
-  ensureFolders, addFolder, removeFolder, assignFolder, folderForRound, rejectFolderId, ROOT_PICKS, ROOT_REJECTS, removeItem, removeSkipped, clearSkipped } from './lib/today.mjs'
+  ensureFolders, addFolder, removeFolder, assignFolder, folderForRound, rejectFolderId, ROOT_PICKS, ROOT_REJECTS, removeItem, removeSkipped, clearSkipped, prune } from './lib/today.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
 
@@ -302,7 +302,7 @@ export function apply(ctx, config) {
     llmProvider: '', llmModel: '', llmReasoningEffort: '',
     searchIntent: '', mailEnabled: true, mailTo: '', minScoreForMail: 0,
     autoLike: false,             // 推荐的视频自动点赞（只有赞）
-    autoNext: false, autoNextIntervalMin: 1, autoNextMaxRounds: 0, watchlaterEnabled: false, triageEnabled: false,
+    autoNext: false, autoNextIntervalMin: 5, autoNextMaxRounds: 0, watchlaterEnabled: false, triageEnabled: false,
     deepMode: 'brief', todayKeepDays: 60,
     perRound: 5, candidatesPerRound: 5, obsidianEnabled: false, obsidianDir: '', obsidianSubdir: 'B站日报',
   }
@@ -1774,6 +1774,8 @@ export function apply(ctx, config) {
   //    上一轮还没跑完就又起一轮，实测同时有 3 个 dsh 子进程（16:49 / 16:51 / 16:51），
   //    互相抢 mcp/写同一份今日表，界面就一直卡在「正在后台运行…」。
   let dutyRunning = false
+  // 正在发信（防面板轮询与定时器同时发两封）
+  let mailing = false
   /** ⭐ 深挖那一轮跑完要发「单条笔记」的信：记下它是给谁的（exit 时用） */
   let pendingDeep = null
   const headlessRunFile = join(stateDir, 'running.json')
@@ -2052,6 +2054,9 @@ export function apply(ctx, config) {
           if (!it.toview) log(`加稍后再看失败：${it.bvid} ${String(JSON.stringify(r)).slice(0, 200)}`)
         } catch (e) { log(`加稍后再看失败：${it.bvid} ${e?.message ?? e}`) }
       }
+      // 0.2.6：记下"这一轮实际加进待看的条数"。加进去 0 条时，待看当然是空的，
+      // 但不能因此判"看完了又去续刷"—— 那会变成无限空转（使用者踩过）。
+      doc.meta = { ...(doc.meta || {}), lastPickCount: want.filter((x) => x.toview).length }
       if (want.some((x) => x.toview)) {
         sawNonEmpty = true
         // ⭐ 0.2.0：落盘 —— 重启后内存清零，不落盘的话「待看空了自动续刷」永远不触发
@@ -2092,13 +2097,21 @@ export function apply(ctx, config) {
     const { file, text } = buildDigest(date, roundItems, { hm })
     const pickCount = roundItems.filter((x) => String(x.verdict || 'pick') !== 'reject').length
     let ok = false
+    // 上一封还在发就**等一会儿**（不要直接 return —— 那样这一轮的信就永远发不出去了）
+    for (let i = 0; mailing && i < 50; i++) await new Promise((r) => setTimeout(r, 200))
+    mailing = true
+    try {
     // ⭐ 2026-10-18：**每轮都发**。原来的"10 分钟内发过就不再发"把
     //    「手动再跑一轮」的信也吃掉了（使用者：「点第二次没发报告」）。
     //    重复跑同一份笔记由上面的 mailedKey 防住，不需要靠时间窗。
     if (cfg.mailEnabled !== false) {
       ok = await sendMailFor(file, `B站日报 ${date} ${hh}:${mm} · 看了 ${roundItems.length} 条，${pickCount} 条推荐`)
       if (ok) lastMailAt = Date.now()
+    } else {
+      log('发信跳过：邮箱没开（「环境与账号」里可开）')
     }
+    } finally { mailing = false }
+
     const ob = obsidianWrite([date, `round-${hm}.md`], text)
     if (ob) log(`Obsidian 已写：${ob}`)
     const rounds = Array.isArray(doc.meta?.rounds) ? doc.meta.rounds : []
@@ -2273,6 +2286,15 @@ export function apply(ctx, config) {
     const doc = readToday(stateDir, date)
     if (!doc?.items?.length) return
     if (doc.meta?.sawNonEmpty) sawNonEmpty = true
+    // 🔴 0.2.6：上一轮一条推荐都没加（待看里本来就没东西可看）⇒ 不要判"看完了"去开新一轮。
+    //    否则模型偶尔一轮 0 推荐，就会无限空转，还白花钱。
+    if (!Number(doc.meta?.lastPickCount || 0)) {
+      if (Date.now() - lastAutoNextLog > 600000) {
+        lastAutoNextLog = Date.now()
+        log('自动续刷：上一轮一条推荐都没加进待看（没东西可看），先不续刷')
+      }
+      return
+    }
     const tracked = doc.items.filter((x) => x.toview)
     if (!tracked.length) { log('自动续刷：今天还没有加过稍后再看的视频，无从判断'); return }                    // 还没往待看里放过 ⇒ 无从判断
     if (dutyRunning) { log('自动续刷：上一轮还在跑，这轮先不判'); return }
@@ -2641,7 +2663,13 @@ export function apply(ctx, config) {
    *    （`dsh: fatal uncaught exception`）。⇒ **定时器回调必须自己兜住所有异常**：
    *    插件再错也只该"这一轮没跑成"，绝不该杀宿主。
    */
+  let lastPruneAt = 0
   const tick = () => {
+    // 0.2.6：todayKeepDays 真正生效（每小时最多跑一次；只把超出天数的 old 文件清空）
+    if (Date.now() - lastPruneAt > 3600000) {
+      lastPruneAt = Date.now()
+      try { prune(stateDir, Number(cfg.todayKeepDays || 60)) } catch { /* 清不掉不影响别的 */ }
+    }
     try {
       // ⭐ 2026-10-18：每分钟对一次「今日表」（幂等）+ 看一次待看要不要续刷。
       //    与峰谷开关**无关** —— 手动跑的那一轮也要能自动发信/进列表。
