@@ -2810,6 +2810,14 @@ export function apply(ctx, config) {
     } catch { resolve(false) }
   })
 
+  /** pip 镜像候选：环境变量优先（只用一个），否则按「阿里云 → 清华 → 官方」回退。
+   *  为什么要有回退：清华源在部分网络会 403，硬编码它等于把「装依赖」做成必坏按钮。 */
+  const pipMirrors = () => {
+    const env = String(process.env.BILI_DUTY_PIP_MIRROR || '').trim()
+    if (env) return [env]
+    return ['https://mirrors.aliyun.com/pypi/simple', 'https://pypi.tuna.tsinghua.edu.cn/simple', 'https://pypi.org/simple']
+  }
+
   const spawnLogged = (cmd, args) => new Promise((resolve) => {
     appendInstall(`\n$ ${cmd} ${args.join(' ')}\n`)
     let c
@@ -2868,7 +2876,6 @@ export function apply(ctx, config) {
     appendAsr(`\n=== ${new Date().toISOString()} 开始装"本地转写"依赖 ===\n`)
     ;(async () => {
       try {
-        const mirror = process.env.BILI_DUTY_PIP_MIRROR || 'https://pypi.tuna.tsinghua.edu.cn/simple'
         const hf = process.env.BILI_DUTY_HF_ENDPOINT || 'https://hf-mirror.com'
         const py = asrPython()
         const uvCmd = await resolveUv()
@@ -2886,8 +2893,12 @@ export function apply(ctx, config) {
         // ⚠️ av 必须钉在 17 以下：faster-whisper 1.2.1 会调 av.open(metadata_errors=…)，
         //    而 av 17+ 不再接受这个参数 ⇒ 装了最新的 av 反而转不了（2026-10-14 在主人机器上实证）
         const AV_PIN = process.env.BILI_DUTY_AV_PIN || 'av>=12,<17'
-        if (uvCmd) code = await spawnTo(uvCmd, ['pip', 'install', '--python', py, '-i', mirror, 'faster-whisper', 'yt-dlp', AV_PIN], { sink: appendAsr })
-        if (code !== 0) code = await spawnTo(py, ['-m', 'pip', 'install', '-i', mirror, 'faster-whisper', 'yt-dlp', AV_PIN], { sink: appendAsr })
+        for (const mirror of pipMirrors()) {
+          appendAsr(`\n—— 试镜像 ${mirror} ——\n`)
+          if (uvCmd) code = await spawnTo(uvCmd, ['pip', 'install', '--python', py, '-i', mirror, 'faster-whisper', 'yt-dlp', AV_PIN], { sink: appendAsr })
+          if (code !== 0) code = await spawnTo(py, ['-m', 'pip', 'install', '-i', mirror, 'faster-whisper', 'yt-dlp', AV_PIN], { sink: appendAsr })
+          if (code === 0) break
+        }
         if (code !== 0) { appendAsr('装包失败 —— 看上面的报错\n'); log('转写：装包失败'); return }
         // ⭐ 顺手把模型也下好（不然第一次跑那一轮会卡在下载上 ✗）；模型走 HuggingFace 国内镜像
         const model = String(cfg.asrModel || 'small')
@@ -2915,7 +2926,6 @@ export function apply(ctx, config) {
     ;(async () => {
       try {
         const reqFile = join(pluginDir, 'vendor', 'bilibili-mcp', 'requirements.txt')
-        const mirror = process.env.BILI_DUTY_PIP_MIRROR || 'https://pypi.tuna.tsinghua.edu.cn/simple'
         const venvPy = venvPython()
         const py = String(cfg.pythonPath || 'python')
           const uvCmd = await resolveUv()   // ⭐ 系统里的 → 家里下好的 → 自己下一份
@@ -2930,8 +2940,12 @@ export function apply(ctx, config) {
           if (!existsSync(venvPy) && !uvCmd) await spawnLogged(py, ['-m', 'venv', join(stateDir, '.venv')])
         }
         let code = 1
-        if (uvCmd) code = await spawnLogged(uvCmd, ['pip', 'install', '--python', venvPy, '-i', mirror, '-r', reqFile])
-        if (code !== 0) code = await spawnLogged(venvPy, ['-m', 'pip', 'install', '-i', mirror, '-r', reqFile])
+        for (const mirror of pipMirrors()) {
+          appendInstall(`\n—— 试镜像 ${mirror} ——\n`)
+          if (uvCmd) code = await spawnLogged(uvCmd, ['pip', 'install', '--python', venvPy, '-i', mirror, '-r', reqFile])
+          if (code !== 0) code = await spawnLogged(venvPy, ['-m', 'pip', 'install', '-i', mirror, '-r', reqFile])
+          if (code === 0) break
+        }
         if (code === 0 && existsSync(venvPy)) { saveCfg({ pythonPath: venvPy }); appendInstall(`已把 pythonPath 设为 ${venvPy}\n`) }
         appendInstall(`=== 结束（exit ${code}，venvReady=${venvReadyNow()}）===\n`)
         log(`装依赖结束：exit=${code} venvReady=${existsSync(venvPy)}`)
